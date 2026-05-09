@@ -1,0 +1,130 @@
+Metadata-Version: 2.4
+Name: krishimind-ai
+Version: 0.1.0
+Summary: AI-powered agricultural intelligence platform with multi-agent orchestration, RAG, MCP, CV, forecasting, and conversational AI.
+Author: KrishiMind AI Team
+License: MIT
+Keywords: agriculture,ai,genai,rag,langgraph,fastapi,computer-vision,forecasting,llm,multi-agent,mcp
+Classifier: Development Status :: 4 - Beta
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Framework :: FastAPI
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn[standard]>=0.30.0
+Requires-Dist: starlette>=0.40.0
+Requires-Dist: pydantic>=2.8.0
+Requires-Dist: pydantic-settings>=2.4.0
+Requires-Dist: python-dotenv>=1.0.1
+Requires-Dist: httpx>=0.27.0
+Requires-Dist: aiofiles>=24.1.0
+Requires-Dist: python-multipart>=0.0.9
+Requires-Dist: orjson>=3.10.0
+Requires-Dist: langchain>=0.3.0
+Requires-Dist: langchain-core>=0.3.0
+Requires-Dist: langchain-community>=0.3.0
+Requires-Dist: langgraph>=0.2.30
+Requires-Dist: litellm>=1.48.0
+Requires-Dist: openai>=1.45.0
+Requires-Dist: tiktoken>=0.7.0
+Requires-Dist: qdrant-client>=1.11.0
+Requires-Dist: sentence-transformers>=3.0.1
+Requires-Dist: faiss-cpu>=1.8.0.post1
+Requires-Dist: redis>=5.0.8
+Requires-Dist: celery>=5.4.0
+Requires-Dist: flower>=2.0.1
+Requires-Dist: sqlalchemy>=2.0.35
+Requires-Dist: alembic>=1.13.2
+Requires-Dist: asyncpg>=0.29.0
+Requires-Dist: psycopg2-binary>=2.9.9
+Requires-Dist: numpy>=1.26.4
+Requires-Dist: pandas>=2.2.2
+Requires-Dist: scikit-learn>=1.5.1
+Requires-Dist: scipy>=1.14.1
+Requires-Dist: joblib>=1.4.2
+Requires-Dist: opencv-python>=4.10.0.84
+Requires-Dist: pillow>=10.4.0
+Requires-Dist: ultralytics>=8.2.82
+Requires-Dist: torch>=2.4.1
+Requires-Dist: torchvision>=0.19.1
+Requires-Dist: timm>=1.0.9
+Requires-Dist: pypdf>=5.0.0
+Requires-Dist: unstructured>=0.15.0
+Requires-Dist: beautifulsoup4>=4.12.3
+Requires-Dist: lxml>=5.3.0
+Requires-Dist: geopy>=2.4.1
+Requires-Dist: xgboost>=2.1.1
+Requires-Dist: prophet>=1.1.6
+Requires-Dist: boto3>=1.35.18
+Requires-Dist: minio>=7.2.8
+Requires-Dist: python-jose[cryptography]>=3.3.0
+Requires-Dist: passlib[bcrypt]>=1.7.4
+Requires-Dist: loguru>=0.7.2
+Requires-Dist: prometheus-client>=0.20.0
+Requires-Dist: opentelemetry-api>=1.27.0
+Requires-Dist: opentelemetry-sdk>=1.27.0
+Requires-Dist: deepeval>=1.1.4
+Requires-Dist: ragas>=0.1.20
+Requires-Dist: tenacity>=9.0.0
+Requires-Dist: pyyaml>=6.0.2
+Requires-Dist: networkx>=3.3
+Provides-Extra: dev
+Requires-Dist: pytest>=8.3.2; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.24.0; extra == "dev"
+Requires-Dist: pytest-cov>=5.0.0; extra == "dev"
+Requires-Dist: black>=24.8.0; extra == "dev"
+Requires-Dist: ruff>=0.6.5; extra == "dev"
+Requires-Dist: mypy>=1.11.2; extra == "dev"
+Requires-Dist: pre-commit>=3.8.0; extra == "dev"
+Provides-Extra: jupyter
+Requires-Dist: jupyterlab>=4.2.5; extra == "jupyter"
+Requires-Dist: ipykernel>=6.29.5; extra == "jupyter"
+Provides-Extra: gpu
+Requires-Dist: torch>=2.4.1; extra == "gpu"
+Requires-Dist: torchvision>=0.19.1; extra == "gpu"
+Provides-Extra: docs
+Requires-Dist: mkdocs>=1.6.1; extra == "docs"
+Requires-Dist: mkdocs-material>=9.5.34; extra == "docs"
+
+# KRISHIMIND-AI (runnable starter)
+
+This is a production-oriented starter backend for an AI-powered agricultural intelligence platform.
+
+## Included
+- FastAPI API gateway
+- Conversational orchestrator
+- Rule-based intent routing
+- Memory store with Redis fallback
+- Simple RAG pipeline
+- Crop image analysis agent
+- MCP-style tool registry
+- Retry/fallback/orchestration utilities
+
+## Important note
+Your original tree uses hyphenated Python service folders such as `api-gateway` and `chatbot-orchestrator`.
+Python imports are cleaner and safer with snake_case folders, so this runnable starter uses:
+- `api_gateway`
+- `chatbot_orchestrator`
+- `web_frontend`
+- `mobile_app`
+
+## Run locally
+```bash
+python -m venv .venv
+# activate venv
+pip install -r requirements.txt
+uvicorn apps.api_gateway.main:app --reload --port 8000
+```
+
+## Sample chat request
+```bash
+curl -X POST http://127.0.0.1:8000/chat   -H "Content-Type: application/json"   -d '{
+    "message": "My tomato leaves have yellow spots",
+    "farmer_id": "f001",
+    "crop": "tomato",
+    "location": {"lat": 28.6, "lon": 77.2},
+    "images": [{"url": "leaf_1.jpg"}]
+  }'
+```

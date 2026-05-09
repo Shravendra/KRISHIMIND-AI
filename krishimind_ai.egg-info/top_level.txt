@@ -1,0 +1,7 @@
+agents
+apps
+mcp
+observability
+orchestration
+rag
+shared
