@@ -2,32 +2,95 @@
 shared/llm/client.py
 ────────────────────
 Unified LLM client via LiteLLM.
-Handles model routing, retries, and fallbacks.
+OpenAI-only configuration — cost-optimised model tiers per agent type.
+
+Model assignment rationale (cheapest model that can handle the task):
+  cheap     → gpt-4o-mini  : intent classification, RAG synthesis, market, soil
+  fast      → gpt-4o-mini  : same as cheap; alias kept for code clarity
+  reasoning → gpt-4o       : complex multi-step reasoning (disease, fertilizer)
+  vision    → gpt-4o       : image analysis (requires vision capability)
+  local     → gpt-4o-mini  : fallback alias when no local model available
 """
 from __future__ import annotations
 
 import os
 from typing import Any, Dict, List, Optional
 
+# ── Load .env before os.getenv is called ─────────────────────────────────────
+try:
+    from dotenv import load_dotenv
+    _base = os.path.join(os.path.dirname(__file__), "..", "..")
+    load_dotenv(dotenv_path=os.path.join(_base, ".env"), override=False)
+    load_dotenv(dotenv_path=os.path.join(_base, ".env.local"), override=True)
+except ImportError:
+    pass  # rely on shell / Docker env
+
 try:
     import litellm
-    from litellm import completion, acompletion
+    from litellm import acompletion
     litellm.set_verbose = False
-    LITELLM_AVAILABLE = True
+
+    # Propagate OpenAI key so LiteLLM always finds it
+    _openai_key = os.getenv("OPENAI_API_KEY", "")
+    if _openai_key:
+        litellm.openai_key = _openai_key
+        os.environ["OPENAI_API_KEY"] = _openai_key
+
+    LITELLM_AVAILABLE = bool(_openai_key)
+    if not LITELLM_AVAILABLE:
+        import warnings
+        warnings.warn(
+            "OPENAI_API_KEY is not set. All LLM calls will use the mock fallback. "
+            "Add OPENAI_API_KEY=sk-... to your .env file.",
+            RuntimeWarning,
+            stacklevel=1,
+        )
 except ImportError:
     LITELLM_AVAILABLE = False
+    acompletion = None  # type: ignore
 
 from shared.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-# ── Model aliases ─────────────────────────────────────────────────────────────
+# ── Model tiers ────────────────────────────────────────────────────────────────
+# All aliases resolve to OpenAI models. Override via .env if needed.
+#
+#  cheap / fast  →  gpt-4o-mini   (~$0.15/1M in, $0.60/1M out)
+#  reasoning     →  gpt-4o        (~$2.50/1M in, $10/1M out) — use sparingly
+#  vision        →  gpt-4o        (only model with vision support)
+#  local         →  gpt-4o-mini   (fallback; set LOCAL_LLM=ollama/llama3 if you
+#                                   run a local server)
 MODEL_MAP = {
-    "cheap":      os.getenv("DEFAULT_LLM", "openai/gpt-4o-mini"),
-    "reasoning":  os.getenv("REASONING_LLM", "anthropic/claude-3-5-sonnet-20241022"),
-    "vision":     os.getenv("VISION_LLM", "openai/gpt-4o"),
-    "local":      os.getenv("LOCAL_LLM", "ollama/llama3"),
-    "fast":       os.getenv("FAST_LLM", "groq/llama-3.1-8b-instant"),
+    "cheap":     os.getenv("DEFAULT_LLM",   "openai/gpt-4o-mini"),
+    "fast":      os.getenv("FAST_LLM",      "openai/gpt-4o-mini"),   # was groq — now OpenAI
+    "reasoning": os.getenv("REASONING_LLM", "openai/gpt-4o"),
+    "vision":    os.getenv("VISION_LLM",    "openai/gpt-4o"),
+    "local":     os.getenv("LOCAL_LLM",     "openai/gpt-4o-mini"),
+}
+
+# Per-agent model alias — edit here to tune cost vs quality per agent
+AGENT_MODEL: Dict[str, str] = {
+    # Intent classification: fast + cheap — runs on every request
+    "intent_classifier":        "fast",
+    # RAG synthesis: cheap — retrieval does the heavy lifting
+    "rag_knowledge_agent":      "cheap",
+    # Crop planning: cheap — structured JSON output, deterministic
+    "crop_planning_agent":      "cheap",
+    # Market agent: cheap — mostly formatting price data
+    "market_agent":             "cheap",
+    # Weather agent: cheap — weather API provides the data, LLM just formats
+    "weather_agent":            "cheap",
+    # Soil agent: cheap — guideline-based recommendations
+    "soil_agent":               "cheap",
+    # Fertilizer: reasoning — requires multi-factor agronomic reasoning
+    "fertilizer_agent":         "reasoning",
+    # Disease detection: reasoning — needs nuanced pathology analysis
+    "disease_detection":        "reasoning",
+    # Image analysis: vision — requires multimodal model
+    "image_analysis":           "vision",
+    # Synthesis / orchestrator: cheap — just formatting already-processed data
+    "synthesis":                "cheap",
 }
 
 SYSTEM_PROMPT_BASE = """You are KrishiMind, an expert agricultural AI assistant.
@@ -39,11 +102,10 @@ Include confidence levels and warnings where appropriate.
 When uncertain, ask clarifying questions rather than guessing."""
 
 
-def _mock_response(prompt: str, system: str) -> str:
-    """Fallback when LiteLLM is not available (dev without API keys)."""
+def _mock_response(prompt: str, _system: str) -> str:
     return (
-        "⚠️ LLM not configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY in .env.local\n\n"
-        f"Your query was: {prompt[:100]}..."
+        "⚠️ LLM not configured. Add OPENAI_API_KEY=sk-... to your .env file.\n\n"
+        f"Your query was: {prompt[:120]}..."
     )
 
 
@@ -54,24 +116,23 @@ async def chat_completion(
     max_tokens: int = 1024,
     system_override: Optional[str] = None,
 ) -> str:
-    """
-    Async chat completion with automatic fallback.
-    
+    """Async chat completion with automatic cheap-model fallback.
+
     Args:
-        messages: List of {role, content} dicts
-        model_alias: One of cheap | reasoning | vision | local | fast
-        temperature: Sampling temperature
-        max_tokens: Maximum response tokens
-        system_override: Override the default system prompt
-    
+        messages:        List of {role, content} dicts (NO system message — added here).
+        model_alias:     Key from MODEL_MAP: cheap | fast | reasoning | vision | local.
+        temperature:     Sampling temperature (0.1 = deterministic, 0.7 = creative).
+        max_tokens:      Max tokens in the response.
+        system_override: Replace the default KrishiMind system prompt.
+
     Returns:
-        Response text string
+        Response text string. Never raises — returns a user-facing error string on failure.
     """
     model = MODEL_MAP.get(model_alias, MODEL_MAP["cheap"])
     system = system_override or SYSTEM_PROMPT_BASE
 
     if not LITELLM_AVAILABLE:
-        logger.warning("LiteLLM not available, using mock response")
+        logger.warning("LiteLLM unavailable / no API key — returning mock response")
         return _mock_response(messages[-1].get("content", ""), system)
 
     full_messages = [{"role": "system", "content": system}] + messages
@@ -84,49 +145,54 @@ async def chat_completion(
             max_tokens=max_tokens,
         )
         return response.choices[0].message.content or ""
-    except Exception as e:
-        logger.warning("Primary model %s failed: %s — trying fallback", model, e)
-        # Try cheap fallback
-        try:
-            fallback = MODEL_MAP["cheap"]
-            if fallback != model:
-                response = await acompletion(
-                    model=fallback,
-                    messages=full_messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-                return response.choices[0].message.content or ""
-        except Exception as e2:
-            logger.error("Fallback also failed: %s", e2)
 
-        return (
-            "I encountered a technical issue connecting to my knowledge system. "
-            "Please try again or contact support if the problem persists."
+    except Exception as primary_err:
+        logger.warning(
+            "Primary model %s failed: %s — trying fallback",
+            model, primary_err,
         )
+        # Always fall back to the cheapest OpenAI model
+        fallback = MODEL_MAP["cheap"]
+        if fallback == model:
+            # Already on the cheapest — nothing to fall back to
+            logger.error("Fallback model same as primary; giving up: %s", primary_err)
+            return (
+                "I encountered a technical issue. Please try again or contact support."
+            )
+        try:
+            response = await acompletion(
+                model=fallback,
+                messages=full_messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            return response.choices[0].message.content or ""
+        except Exception as fallback_err:
+            logger.error("Fallback model %s also failed: %s", fallback, fallback_err)
+            return (
+                "I encountered a technical issue. Please try again or contact support."
+            )
 
 
 async def vision_completion(
     messages: Optional[List[Dict[str, Any]]] = None,
     system_prompt: Optional[str] = None,
     max_tokens: int = 1500,
-    # Legacy positional-style args kept for backwards compat
     text_prompt: Optional[str] = None,
     image_urls: Optional[List[str]] = None,
 ) -> str:
-    """Vision-enabled completion for image analysis.
+    """Vision-enabled completion for image analysis (requires gpt-4o).
 
-    Supports two calling styles:
-      1. vision_completion(messages=[...], system_prompt="...")   ← used by image_analysis/service.py
+    Two calling styles:
+      1. vision_completion(messages=[...], system_prompt="...")
       2. vision_completion(text_prompt="...", image_urls=[...])   ← legacy
     """
     system = system_prompt or SYSTEM_PROMPT_BASE
-    model = MODEL_MAP["vision"]
+    model = MODEL_MAP["vision"]  # always gpt-4o
 
     if not LITELLM_AVAILABLE:
-        return _mock_response(text_prompt or "", system)
+        return _mock_response(text_prompt or "image analysis", system)
 
-    # Build message list
     if messages is not None:
         full_messages = [{"role": "system", "content": system}] + messages
     else:
@@ -135,7 +201,7 @@ async def vision_completion(
             content.append({"type": "image_url", "image_url": {"url": url, "detail": "high"}})
         full_messages = [
             {"role": "system", "content": system},
-            {"role": "user", "content": content},
+            {"role": "user",   "content": content},
         ]
 
     try:
@@ -146,19 +212,17 @@ async def vision_completion(
             max_tokens=max_tokens,
         )
         return response.choices[0].message.content or ""
-    except Exception as e:
-        logger.error("Vision completion failed: %s", e)
-        return "Unable to analyze image at this time. Please try again."
+    except Exception as exc:
+        logger.error("Vision completion failed: %s", exc)
+        return "Unable to analyse the image at this time. Please try again."
 
 
-# ── LLMClient class ────────────────────────────────────────────────────────────
-# Thin wrapper so files can do:  _llm = LLMClient()  then  await _llm.chat_completion(...)
+# ── LLMClient class wrapper ───────────────────────────────────────────────────
 
 class LLMClient:
-    """Class-based wrapper around the module-level async functions.
-
-    Lets agent files import and instantiate a client object while the
-    actual logic lives in the standalone functions above.
+    """Thin object wrapper so agents can do:
+        _llm = LLMClient()
+        await _llm.chat_completion(...)
     """
 
     async def chat_completion(

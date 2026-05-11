@@ -48,12 +48,52 @@ export const agentService = {
 
   // Soil & Fertilizer
   analyzeSoil: (payload) => api.post('/chat', {
-    message: `Analyse my soil: ${JSON.stringify(payload)}`,
-    farm_context: payload,
+    message: `Analyse my soil test results for ${payload.cropType || 'general crops'}.`
+      + ` pH: ${payload.pH || 'not provided'},`
+      + ` N: ${payload.nitrogen || 'not provided'} kg/ha,`
+      + ` P: ${payload.phosphorus || 'not provided'} kg/ha,`
+      + ` K: ${payload.potassium || 'not provided'} kg/ha,`
+      + ` EC: ${payload.ec || 'not provided'} dS/m,`
+      + ` Soil texture: ${payload.soilType || 'not specified'}.`,
+    crop: payload.cropType || undefined,
+    farm_context: {
+      cropType: payload.cropType,
+      // soil_test_data keys must match what SOIL_ANALYSIS_PROMPT.format() expects
+      soil_test_data: {
+        ph:           payload.pH          || null,
+        nitrogen:     payload.nitrogen    || null,
+        phosphorus:   payload.phosphorus  || null,
+        potassium:    payload.potassium   || null,
+        ec:           payload.ec          || null,
+        texture:      payload.soilType    || null,
+        organic_carbon: null,
+        zinc:         null,
+        iron:         null,
+        boron:        null,
+      },
+    },
   }),
   optimizeFertilizer: (payload) => api.post('/chat', {
-    message: `Optimise fertilizer plan for ${payload.cropType} at ${payload.growthStage} stage. Farm size: ${payload.farmSize} acres. Soil: ${payload.soilType}. Budget: ${payload.budget}. Organic preferred: ${payload.organic}.`,
-    farm_context: payload,
+    message: `Generate a complete fertilizer plan for ${payload.cropType || 'my crop'}`
+      + ` at ${payload.growthStage} growth stage.`
+      + ` Farm size: ${payload.farmSize || 1} acres.`
+      + ` Soil type: ${payload.soilType}.`
+      + ` Budget: ${payload.budget}.`
+      + ` Organic preferred: ${payload.organic ? 'yes' : 'no'}.`,
+    crop: payload.cropType || undefined,
+    farm_context: {
+      cropType: payload.cropType,
+      // All structured fields the orchestrator needs
+      fertilizer_context: {
+        growth_stage:      payload.growthStage   || null,
+        land_size_acres:   payload.farmSize
+                             ? parseFloat(payload.farmSize)
+                             : null,
+        soil_type:         payload.soilType      || null,
+        budget:            payload.budget        || 'medium',
+        organic_preferred: Boolean(payload.organic),
+      },
+    },
   }),
 
   // Weather Risk

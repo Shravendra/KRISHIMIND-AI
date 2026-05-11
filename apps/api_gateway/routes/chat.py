@@ -88,24 +88,21 @@ async def chat(
             for i, img in enumerate(payload.images or [])
         ]
 
+        fc = payload.farm_context or {}
+
         request = ChatRequest(
             message=payload.message,
-
             farmer_id=current_user.farmer_id,
-
-            crop=payload.crop
-            or (payload.farm_context or {}).get("cropType"),
-
+            crop=payload.crop or fc.get("cropType"),
             season=payload.season,
-
+            growth_stage=fc.get("growth_stage"),   
             images=image_inputs,
-
             conversation_id=payload.conversation_id,
-
             conversation_history=[
-                m.model_dump()
-                for m in (payload.history or [])
+                m.model_dump() for m in (payload.history or [])
             ],
+            soil_test_data=fc.get("soil_test_data") or None,
+            fertilizer_context=fc.get("fertilizer_context") or None,
         )
 
         response = await _orchestrator.handle_message(

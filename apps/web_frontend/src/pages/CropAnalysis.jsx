@@ -189,6 +189,16 @@ export default function CropAnalysis() {
     setPreviews(prev => prev.filter((_, idx) => idx !== i))
   }
 
+  // ─── Helper: File → base64 string ────────────────────────────────────────────
+  const fileToBase64 = (file) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result.split(',')[1]) // strip data:...;base64,
+      reader.onerror = () => reject(new Error('Failed to read file'))
+      reader.readAsDataURL(file)
+    })
+
+  // ─── Main analyze handler ─────────────────────────────────────────────────────
   const analyze = async () => {
     if (files.length === 0 && !description.trim()) return
     setIsAnalyzing(true)
@@ -196,26 +206,41 @@ export default function CropAnalysis() {
     setError(null)
 
     try {
-      const imageInputs = files.map(f => ({ url: f.name }))
+      // Bug 1 fix: convert files to base64 strings
+      const base64Images = await Promise.all(files.map(fileToBase64))
+
       const { data } = await api.post('/chat', {
-        message: description || `Diagnose the crop issue visible in the uploaded images.`,
-        farmer_id: user?.farmer_id || 'anonymous',
+        message: description || 'Diagnose the crop issue visible in the uploaded images.',
         crop: crop || undefined,
         season: season.split(' ')[0]?.toLowerCase() || undefined,
-        growth_stage: stage?.toLowerCase() || undefined,
-        images: imageInputs,
-        conversation_history: [],
+        // Bug 2 fix: correct key is `history`, not `conversation_history`
+        history: [],
+        // Bug 3 fix: pass growth_stage through farm_context
+        farm_context: {
+          growth_stage: stage?.toLowerCase() || undefined,
+        },
+        // Bug 1 fix: send base64 strings, not { url: f.name } objects
+        images: base64Images,
       })
 
-      // Extract disease detection result
-      const diseaseResult = data.agent_results?.find(r => r.name === 'disease_detection')?.data
-        || data.agent_results?.find(r => r.name === 'image_analysis')?.data
+      // Bug 4 fix: try both agent names, fall back gracefully to an empty object
+      const diseaseResult =
+        data.agent_results?.find(r => r.name === 'disease_detection' && r.success)?.data ||
+        data.agent_results?.find(r => r.name === 'image_analysis' && r.success)?.data ||
+        {}
+
+      // Bug 5 fix: merge warnings from both the agent result and the top-level response
+      const mergedWarnings = [
+        ...(Array.isArray(diseaseResult.warnings) ? diseaseResult.warnings : []),
+        ...(Array.isArray(data.warnings) ? data.warnings : []),
+      ].filter((v, i, a) => a.indexOf(v) === i) // deduplicate
 
       setResult({
         ...diseaseResult,
         answer: data.answer,
-        recommendations: data.recommendations,
-        warnings: data.warnings,
+        recommendations: data.recommendations ?? diseaseResult.recommendations ?? [],
+        warnings: mergedWarnings,
+        follow_up: diseaseResult.follow_up || data.follow_up_question,
       })
     } catch (err) {
       setError(err.response?.data?.detail || 'Analysis failed. Please try again.')

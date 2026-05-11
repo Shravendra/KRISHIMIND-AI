@@ -82,6 +82,8 @@ class AgentContext:
     location: Optional[Dict[str, Any]] = None
     conversation_history: List[Dict[str, Any]] = field(default_factory=list)
     images: List[Dict[str, Any]] = field(default_factory=list)
+    soil_test_data: Optional[Dict[str, Any]] = None
+    fertilizer_context: Optional[Dict[str, Any]] = None
 
 
 class ChatbotOrchestrator:
@@ -110,6 +112,8 @@ class ChatbotOrchestrator:
             location=request.location.model_dump() if request.location else None,
             conversation_history=request.conversation_history,
             images=[img.model_dump() for img in request.images],
+            soil_test_data=request.soil_test_data,
+            fertilizer_context=request.fertilizer_context, 
         )
 
         # FarmProfileStore.update() is async — was previously misnamed .upsert()
@@ -274,15 +278,32 @@ class ChatbotOrchestrator:
             crop=ctx.crop,
             season=ctx.season,
             location=ctx.location,
+            soil_test_data=ctx.soil_test_data,
         )
 
     async def _run_fertilizer_agent(self, ctx: AgentContext, message: str) -> Dict[str, Any]:
-        # optimize_fertilizer(crop, ...)
+        fc = ctx.fertilizer_context or {}
+
+        extra_context = []
+        if fc.get("budget"):
+            extra_context.append(f"Budget preference: {fc['budget']}")
+        if fc.get("organic_preferred"):
+            extra_context.append("Farmer strongly prefers organic and bio-fertilizers")
+
+        full_description = message
+        if extra_context:
+            full_description = message + ". " + ". ".join(extra_context) + "."
+
         return await optimize_fertilizer(
             crop=ctx.crop,
             season=ctx.season,
             location=ctx.location,
-            description=message,
+            description=full_description,
+            growth_stage=fc.get("growth_stage") or ctx.growth_stage,       # ← NEW
+            land_size_acres=float(fc["land_size_acres"])
+                            if fc.get("land_size_acres") else None,         # ← NEW
+            soil_data={"texture": fc["soil_type"]}
+                      if fc.get("soil_type") else None,                     # ← NEW
         )
 
     async def _run_weather_agent(self, ctx: AgentContext, message: str) -> Dict[str, Any]:

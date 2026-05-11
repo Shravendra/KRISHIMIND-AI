@@ -28,13 +28,15 @@ class ChatRequest(BaseModel):
     message: str
     farmer_id: str = Field(default="anonymous")
     crop: Optional[str] = None
-    season: Optional[str] = None          # kharif | rabi | zaid
-    growth_stage: Optional[str] = None    # seedling | vegetative | flowering | fruiting
+    season: Optional[str] = None
+    growth_stage: Optional[str] = None
     location: Optional[Location] = None
     images: List[ImageInput] = Field(default_factory=list)
     conversation_id: Optional[str] = None
     conversation_history: List[Dict[str, Any]] = Field(default_factory=list)
-    language: str = "en"                  # en | hi | mr | te | kn | ta
+    language: str = "en"
+    soil_test_data: Optional[Dict[str, Any]] = None
+    fertilizer_context: Optional[Dict[str, Any]] = None 
 
 
 class AgentResult(BaseModel):

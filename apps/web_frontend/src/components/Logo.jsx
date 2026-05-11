@@ -74,10 +74,10 @@ export function Logo({ size = 40, showText = true, variant = 'default' }) {
         <div className="flex flex-col leading-none">
           <span className={`font-display font-bold tracking-tight ${textColor}`}
                 style={{ fontSize: size * 0.45 }}>
-            KrishiMind
+            KrishiMind AI
           </span>
           <span className={`font-body font-medium tracking-widest uppercase ${subColor}`}
-                style={{ fontSize: size * 0.22 }}>
+                style={{ fontSize: size * 0.26 }}>
             Agri Intelligence
           </span>
         </div>

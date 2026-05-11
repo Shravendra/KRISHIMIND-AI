@@ -26,7 +26,28 @@ export default function SoilFertilizer() {
     setResult(null);
     try {
       const res = await agentService.analyzeSoil(soilForm);
-      setResult({ type: "soil", data: res.data });
+      const chatResponse = res.data;   // this is ChatResponse
+
+      // The soil score lives inside agent_results, NOT at the top level
+      const soilAgentResult = chatResponse.agent_results?.find(
+        r => r.name === 'soil_agent' && r.success
+      );
+      const soilData = soilAgentResult?.data || {};
+
+      setResult({
+        type: "soil",
+        data: {
+          ...soilData,
+          // Attach the synthesized AI answer and top-level recommendations
+          answer:          chatResponse.answer,
+          recommendations: chatResponse.recommendations ?? soilData.recommendations ?? [],
+          warnings: [
+            ...(Array.isArray(soilData.warnings)            ? soilData.warnings            : []),
+            ...(Array.isArray(chatResponse.warnings)        ? chatResponse.warnings        : []),
+          ].filter((v, i, a) => a.indexOf(v) === i),
+          follow_up: soilData.follow_up || chatResponse.follow_up_question,
+        },
+      });
     } catch {
       setResult({ type: "error", message: "Analysis failed. Please check your inputs and try again." });
     }
@@ -38,7 +59,29 @@ export default function SoilFertilizer() {
     setResult(null);
     try {
       const res = await agentService.optimizeFertilizer(fertForm);
-      setResult({ type: "fertilizer", data: res.data });
+      const chatResponse = res.data;   // ChatResponse — score is NOT here at root level
+
+      // Extract fertilizer agent data from agent_results
+      const fertAgentResult = chatResponse.agent_results?.find(
+        r => r.name === 'fertilizer_agent' && r.success
+      );
+      const fertData = fertAgentResult?.data || {};
+
+      setResult({
+        type: "fertilizer",
+        data: {
+          ...fertData,
+          answer:          chatResponse.answer,
+          recommendations: chatResponse.recommendations?.length
+                             ? chatResponse.recommendations
+                             : (fertData.important_tips ?? []),
+          warnings: [
+            ...(Array.isArray(fertData.warnings)         ? fertData.warnings         : []),
+            ...(Array.isArray(chatResponse.warnings)     ? chatResponse.warnings     : []),
+          ].filter((v, i, a) => a.indexOf(v) === i),
+          follow_up: fertData.follow_up || chatResponse.follow_up_question,
+        },
+      });
     } catch {
       setResult({ type: "error", message: "Optimization failed. Please try again." });
     }
@@ -258,8 +301,55 @@ export default function SoilFertilizer() {
                     style={{ width: `${result.data.soil_health_score ?? 0}%` }}
                   />
                 </div>
-                <p className="text-xs text-gray-500 capitalize">{result.data.health_rating} condition</p>
+                {result.data.summary && (
+                  <p className="text-sm text-gray-600 mt-2">{result.data.summary}</p>
+                )}
               </div>
+
+              {/* ── NEW: AI Suggestion block ───────────────────────────── */}
+              {result.data.answer && (
+                <div className="card border-leaf-200 bg-leaf-50">
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-lg">🤖</span>
+                    <h3 className="font-semibold text-leaf-800">AI Fertility Suggestions</h3>
+                  </div>
+                  <div className="text-sm text-leaf-900 leading-relaxed whitespace-pre-line">
+                    {result.data.answer}
+                  </div>
+                  {result.data.follow_up && (
+                    <p className="mt-3 text-xs text-leaf-700 italic border-t border-leaf-200 pt-2">
+                      💡 {result.data.follow_up}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Recommendations */}
+              {result.data.recommendations?.length > 0 && (
+                <div className="card">
+                  <h4 className="font-semibold text-gray-800 mb-2">📋 Recommendations</h4>
+                  <ul className="space-y-1">
+                    {result.data.recommendations.map((rec, i) => (
+                      <li key={i} className="flex gap-2 text-sm text-gray-700">
+                        <CheckCircle className="w-4 h-4 text-leaf-500 shrink-0 mt-0.5" />
+                        {rec}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Warnings */}
+              {result.data.warnings?.length > 0 && (
+                <div className="card border-earth-200 bg-earth-50">
+                  <h4 className="font-semibold text-earth-800 mb-2 flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4" /> Warnings
+                  </h4>
+                  {result.data.warnings.map((w, i) => (
+                    <p key={i} className="text-sm text-earth-700">{w}</p>
+                  ))}
+                </div>
+              )}
 
               {/* Radar chart */}
               {radarData.length > 0 && (
@@ -294,29 +384,153 @@ export default function SoilFertilizer() {
 
           {result?.type === "fertilizer" && result.data && (
             <>
-              <div className="card">
-                <h3 className="font-semibold text-gray-800 mb-3">Fertilizer Schedule</h3>
-                {result.data.schedule?.map((phase, i) => (
-                  <div key={i} className="border border-gray-100 rounded-lg p-3 mb-2">
-                    <p className="text-sm font-medium text-gray-800">{phase.phase || phase.timing}</p>
-                    <p className="text-xs text-gray-500 mt-0.5">{phase.application || phase.description}</p>
-                    {phase.products?.length > 0 && (
-                      <ul className="mt-2 space-y-1">
-                        {phase.products.map((p, j) => (
-                          <li key={j} className="text-xs text-leaf-700 bg-leaf-50 rounded px-2 py-0.5 inline-block mr-1">{p}</li>
-                        ))}
-                      </ul>
-                    )}
+              {/* AI Summary */}
+              {result.data.answer && (
+                <div className="card border-leaf-200 bg-leaf-50">
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-lg">🤖</span>
+                    <h3 className="font-semibold text-leaf-800">AI Fertilizer Advisory</h3>
                   </div>
-                ))}
-              </div>
-              {result.data.estimated_cost && (
-                <div className="card bg-earth-50 border-earth-200">
-                  <p className="text-sm font-medium text-earth-800">Estimated Cost</p>
-                  <p className="text-xl font-bold text-earth-600 mt-1">{result.data.estimated_cost}</p>
-                  {result.data.expected_yield_increase && (
-                    <p className="text-xs text-earth-600 mt-1">Expected yield increase: {result.data.expected_yield_increase}</p>
+                  <p className="text-sm text-leaf-900 leading-relaxed whitespace-pre-line">
+                    {result.data.answer}
+                  </p>
+                  {result.data.follow_up && (
+                    <p className="mt-3 text-xs text-leaf-700 italic border-t border-leaf-200 pt-2">
+                      💡 {result.data.follow_up}
+                    </p>
                   )}
+                </div>
+              )}
+
+              {/* NPK Requirement */}
+              {result.data.total_npk_requirement && (
+                <div className="card">
+                  <h4 className="font-semibold text-gray-800 mb-3">🧪 Total NPK Requirement</h4>
+                  <div className="grid grid-cols-3 gap-3">
+                    {Object.entries(result.data.total_npk_requirement).map(([nutrient, kg]) => (
+                      <div key={nutrient} className="bg-leaf-50 rounded-xl p-3 text-center">
+                        <p className="text-xl font-bold text-leaf-700">{kg}</p>
+                        <p className="text-xs text-gray-500 mt-1">kg/acre</p>
+                        <p className="text-sm font-semibold text-gray-700">{nutrient}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Cost & Yield Summary */}
+              {(result.data.total_fertilizer_cost_inr_per_acre ||
+                result.data.expected_yield_increase_percent) && (
+                <div className="grid grid-cols-2 gap-3">
+                  {result.data.total_fertilizer_cost_inr_per_acre && (
+                    <div className="card text-center bg-earth-50 border-earth-200">
+                      <p className="text-2xl font-bold text-earth-700">
+                        ₹{result.data.total_fertilizer_cost_inr_per_acre.toLocaleString('en-IN')}
+                      </p>
+                      <p className="text-xs text-gray-500 mt-1">Estimated cost / acre</p>
+                    </div>
+                  )}
+                  {result.data.expected_yield_increase_percent && (
+                    <div className="card text-center bg-leaf-50 border-leaf-200">
+                      <p className="text-2xl font-bold text-leaf-700">
+                        +{result.data.expected_yield_increase_percent}%
+                      </p>
+                      <p className="text-xs text-gray-500 mt-1">Expected yield increase</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Fertilizer Schedule */}
+              {result.data.fertilizer_schedule?.length > 0 && (
+                <div className="card">
+                  <h4 className="font-semibold text-gray-800 mb-3">📅 Application Schedule</h4>
+                  <div className="space-y-4">
+                    {result.data.fertilizer_schedule.map((stage, i) => (
+                      <div key={i} className="border border-gray-100 rounded-xl p-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="font-medium text-sm text-gray-800 capitalize">
+                            {stage.stage}
+                          </span>
+                          <span className="text-xs text-gray-400 bg-gray-50 px-2 py-0.5 rounded-full">
+                            {stage.timing}
+                          </span>
+                        </div>
+                        <div className="space-y-1">
+                          {stage.products?.map((product, j) => (
+                            <div key={j} className="flex items-start justify-between text-xs gap-2">
+                              <div>
+                                <span className="font-medium text-gray-700">{product.name}</span>
+                                <span className="text-gray-400 ml-1">— {product.method}</span>
+                                {product.notes && (
+                                  <p className="text-gray-400 mt-0.5">{product.notes}</p>
+                                )}
+                              </div>
+                              <div className="text-right shrink-0">
+                                <p className="text-leaf-700 font-semibold">
+                                  {product.quantity_kg_per_acre} kg/acre
+                                </p>
+                                {product.cost_per_acre_inr && (
+                                  <p className="text-gray-400">
+                                    ₹{product.cost_per_acre_inr}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Bio-fertilizer Package */}
+              {result.data.bio_fertilizer_package?.length > 0 && (
+                <div className="card bg-leaf-50 border-leaf-200">
+                  <h4 className="font-semibold text-leaf-800 mb-2">🌿 Bio-Fertilizer Package</h4>
+                  <div className="space-y-2">
+                    {result.data.bio_fertilizer_package.map((bio, i) => (
+                      <div key={i} className="text-sm text-leaf-800">
+                        <span className="font-medium">{bio.name}</span>
+                        {bio.dose && <span className="text-leaf-600"> — {bio.dose}</span>}
+                        {bio.benefit && (
+                          <p className="text-xs text-leaf-600 mt-0.5">{bio.benefit}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Recommendations & Dos/Don'ts */}
+              {(result.data.recommendations?.length > 0 ||
+                result.data.dos_and_donts?.length > 0) && (
+                <div className="card">
+                  <h4 className="font-semibold text-gray-800 mb-2">📋 Tips & Best Practices</h4>
+                  <ul className="space-y-1">
+                    {[
+                      ...(result.data.recommendations || []),
+                      ...(result.data.dos_and_donts || []),
+                    ].map((tip, i) => (
+                      <li key={i} className="flex gap-2 text-sm text-gray-700">
+                        <CheckCircle className="w-4 h-4 text-leaf-500 shrink-0 mt-0.5" />
+                        {tip}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Warnings */}
+              {result.data.warnings?.length > 0 && (
+                <div className="card border-earth-200 bg-earth-50">
+                  <h4 className="font-semibold text-earth-800 mb-2 flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4" /> Warnings
+                  </h4>
+                  {result.data.warnings.map((w, i) => (
+                    <p key={i} className="text-sm text-earth-700">{w}</p>
+                  ))}
                 </div>
               )}
             </>
