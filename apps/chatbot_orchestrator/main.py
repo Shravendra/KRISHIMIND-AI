@@ -36,12 +36,12 @@ from rag.pipelines.rag_pipeline import rag_answer
 logger = get_logger(__name__)
 
 SYNTHESIS_SYSTEM = """You are KrishiMind, a friendly agricultural AI assistant.
-Your job is to synthesize analysis from multiple AI agents into ONE clear, 
+Your job is to synthesize analysis from multiple AI agents into ONE clear,
 farmer-friendly response in simple language.
 
 Rules:
 - Write as if talking directly to a farmer
-- Use simple words, avoid technical jargon  
+- Use simple words, avoid technical jargon
 - Give specific actionable steps with timing
 - Include confidence level naturally ("I'm fairly confident that...")
 - Mention costs and quantities when relevant
@@ -94,29 +94,39 @@ class ChatbotOrchestrator:
         t0 = time.perf_counter()
         conversation_id = request.conversation_id or str(uuid4())
         has_images = len(request.images) > 0
-        decision = classify_intent(request.message, has_images=has_images)
+
+        # classify_intent is async and accepts has_images
+        decision = await classify_intent(
+            request.message,
+            history=request.conversation_history,
+            has_images=has_images,
+        )
 
         ctx = AgentContext(
             farmer_id=request.farmer_id,
             crop=request.crop,
             season=request.season,
+            growth_stage=request.growth_stage,
             location=request.location.model_dump() if request.location else None,
             conversation_history=request.conversation_history,
             images=[img.model_dump() for img in request.images],
         )
 
-        # Update farm profile with context
+        # FarmProfileStore.update() is async — was previously misnamed .upsert()
         if ctx.crop or ctx.location:
-            self.profile_store.upsert(ctx.farmer_id, {
-                "crop": ctx.crop,
-                "season": ctx.season,
-                "location": ctx.location,
-            })
+            try:
+                await self.profile_store.update(ctx.farmer_id, {
+                    "crop": ctx.crop,
+                    "season": ctx.season,
+                    "location": ctx.location,
+                })
+            except Exception as exc:
+                logger.warning("profile_update_skipped", extra={"error": str(exc)})
 
         logger.info(
             "Intent: %s (%.2f) | Agents: %s | Farmer: %s",
             decision.intent, decision.confidence,
-            decision.agents_to_call, ctx.farmer_id
+            decision.agents_to_call, ctx.farmer_id,
         )
 
         # ── Run agents in parallel ─────────────────────────────────────────────
@@ -137,8 +147,12 @@ class ChatbotOrchestrator:
         follow_up = self._generate_follow_up(decision.intent, request)
 
         # ── Persist memory ────────────────────────────────────────────────────
-        await self.memory.append_message(conversation_id, {"role": "user", "content": request.message})
-        await self.memory.append_message(conversation_id, {"role": "assistant", "content": answer})
+        # RedisStore.append_message(session_id, role, content) — three separate args
+        try:
+            await self.memory.append_message(conversation_id, "user", request.message)
+            await self.memory.append_message(conversation_id, "assistant", answer)
+        except Exception as exc:
+            logger.warning("memory_append_skipped", extra={"error": str(exc)})
 
         elapsed = (time.perf_counter() - t0) * 1000
         logger.info("Response generated in %.1fms", elapsed)
@@ -149,8 +163,8 @@ class ChatbotOrchestrator:
             confidence=decision.confidence,
             answer=answer,
             follow_up_question=follow_up,
-            recommendations=merged["recommendations"][:6],
-            warnings=merged["warnings"][:4],
+            recommendations=merged["all_recommendations"][:6],
+            warnings=merged["all_warnings"][:4],
             agent_results=agent_results,
             metadata={
                 "agent_count": len(agent_results),
@@ -160,84 +174,101 @@ class ChatbotOrchestrator:
             },
         )
 
+    # ── Agent runner ──────────────────────────────────────────────────────────
+
     async def _run_agents(
         self,
         decision,
         ctx: AgentContext,
         message: str,
     ) -> List[AgentResult]:
-        """Run all required agents in parallel."""
-        tasks = {}
-
+        """Run all required agents in parallel and wrap raw dicts into AgentResult."""
+        tasks: Dict[str, Any] = {}
         agents = set(decision.agents_to_call)
 
         if "image_analysis" in agents:
             tasks["image_analysis"] = self._run_image_analysis(ctx)
-
         if "disease_detection" in agents:
             tasks["disease_detection"] = self._run_disease_detection(ctx, message)
-
         if "soil_agent" in agents:
             tasks["soil_agent"] = self._run_soil_agent(ctx, message)
-
         if "fertilizer_agent" in agents:
             tasks["fertilizer_agent"] = self._run_fertilizer_agent(ctx, message)
-
         if "weather_agent" in agents:
             tasks["weather_agent"] = self._run_weather_agent(ctx, message)
-
         if "crop_planning_agent" in agents:
             tasks["crop_planning_agent"] = self._run_crop_planning(ctx, message)
-
         if "market_agent" in agents:
             tasks["market_agent"] = self._run_market_agent(ctx, message)
 
-        # Always run RAG for educational context
+        # RAG runs alongside disease detection and general knowledge
         if any(a in agents for a in ["rag_knowledge_agent", "disease_detection", "education_agent"]):
             tasks["rag_knowledge_agent"] = self._run_rag(ctx, message)
 
         if not tasks:
             tasks["rag_knowledge_agent"] = self._run_rag(ctx, message)
 
-        # Execute all tasks in parallel
         names = list(tasks.keys())
-        coroutines = list(tasks.values())
-        results = await asyncio.gather(*coroutines, return_exceptions=True)
+        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
 
-        agent_results = []
+        # ── CRITICAL FIX: agents return plain dicts; aggregator needs AgentResult ──
+        agent_results: List[AgentResult] = []
         for name, result in zip(names, results):
             if isinstance(result, Exception):
                 logger.error("Agent %s failed: %s", name, result)
                 agent_results.append(AgentResult(
-                    name=name, success=False, error=str(result)
+                    name=name,
+                    success=False,
+                    error=str(result),
                 ))
             else:
+                # result is a Dict[str, Any] from the service — wrap into AgentResult
+                data: Dict[str, Any] = result or {}
                 agent_results.append(AgentResult(
-                    name=name, success=True, data=result or {}
+                    name=name,
+                    success=True,
+                    data=data,
+                    # Surface common fields for the aggregator
+                    summary=_pick(data, "summary", "answer", "primary_diagnosis"),
+                    recommendations=_pick_list(data, "immediate_actions", "recommendations",
+                                               "treatment_protocol"),
+                    warnings=_pick_list(data, "warnings", "alerts"),
+                    confidence=_pick_float(data, "confidence", "confidence_avg"),
                 ))
 
         return agent_results
 
-    # ── Agent runners ──────────────────────────────────────────────────────────
+    # ── Individual agent wrappers ─────────────────────────────────────────────
+    # Each method calls the real service function with its EXACT parameter names.
 
     async def _run_image_analysis(self, ctx: AgentContext) -> Dict[str, Any]:
+        # analyze_images(images: List[str], crop_type, context)
+        # 'images' expects base64-encoded strings
+        b64_images = [
+            img.get("base64_data", "")
+            for img in ctx.images
+            if img.get("base64_data")
+        ]
         return await analyze_images(
-            images=[img.get("base64_data", img.get("url", "")) for img in ctx.images],
+            images=b64_images,
             crop_type=ctx.crop,
             context=None,
         )
 
     async def _run_disease_detection(self, ctx: AgentContext, message: str) -> Dict[str, Any]:
+        # detect_disease(description, crop_type, location, season, growth_stage, image_urls)
         image_urls = [img.get("url", "") for img in ctx.images if img.get("url")]
         return await detect_disease(
-            description=message,
-            crop_type=ctx.crop,
+            description=message,            # ← 'description', not 'message'
+            crop_type=ctx.crop,             # ← 'crop_type', not 'crop'
             location=ctx.location,
             season=ctx.season,
-            image_urls=image_urls if image_urls else None,
+            growth_stage=ctx.growth_stage,
+            image_urls=image_urls or None,
         )
 
     async def _run_soil_agent(self, ctx: AgentContext, message: str) -> Dict[str, Any]:
+        # analyze_soil(description, crop, season, location)
         return await analyze_soil(
             description=message,
             crop=ctx.crop,
@@ -246,6 +277,7 @@ class ChatbotOrchestrator:
         )
 
     async def _run_fertilizer_agent(self, ctx: AgentContext, message: str) -> Dict[str, Any]:
+        # optimize_fertilizer(crop, ...)
         return await optimize_fertilizer(
             crop=ctx.crop,
             season=ctx.season,
@@ -254,22 +286,26 @@ class ChatbotOrchestrator:
         )
 
     async def _run_weather_agent(self, ctx: AgentContext, message: str) -> Dict[str, Any]:
+        # assess_weather_risk(query, crop, growth_stage, season, location)
         return await assess_weather_risk(
-            query=message,
+            query=message,                  # ← 'query', not 'message'
             crop=ctx.crop,
+            growth_stage=ctx.growth_stage,
             season=ctx.season,
             location=ctx.location,
         )
 
     async def _run_crop_planning(self, ctx: AgentContext, message: str) -> Dict[str, Any]:
+        # plan_crops(location, land_size_acres, current_crop, season, ..., description)
         return await plan_crops(
             location=ctx.location,
             current_crop=ctx.crop,
             season=ctx.season,
-            description=message,
+            description=message,            # ← 'description', not 'message'
         )
 
     async def _run_market_agent(self, ctx: AgentContext, message: str) -> Dict[str, Any]:
+        # analyze_market(crop, location, query)
         return await analyze_market(
             crop=ctx.crop,
             location=ctx.location,
@@ -277,82 +313,102 @@ class ChatbotOrchestrator:
         )
 
     async def _run_rag(self, ctx: AgentContext, message: str) -> Dict[str, Any]:
-        return rag_answer(
+        # rag_answer(query, farm_context, history, top_k)
+        farm_context = {
+            "location": ctx.location,
+            "primary_crops": [ctx.crop] if ctx.crop else [],
+            "season": ctx.season,
+        }
+        return await rag_answer(
             query=message,
-            crop=ctx.crop,
-            season=ctx.season,
-            location=ctx.location,
-            memory=self.vector_memory,
+            farm_context=farm_context,      # ← 'farm_context', not 'farmer_id'
+            history=ctx.conversation_history,  # ← 'history', not 'conversation_history'
         )
 
-    # ── Synthesis ──────────────────────────────────────────────────────────────
+    # ── Synthesis ─────────────────────────────────────────────────────────────
 
     async def _synthesize(
         self,
         query: str,
         intent: str,
         crop: Optional[str],
-        location: Optional[Dict],
+        location: Optional[Dict[str, Any]],
         agent_results: List[AgentResult],
         merged: Dict[str, Any],
     ) -> str:
-        """Use LLM to synthesize multi-agent outputs into farmer-friendly response."""
-
-        # Build agent summaries
-        summaries = []
-        for r in agent_results:
-            if r.success and r.data:
-                summary = r.data.get("summary") or r.data.get("primary_diagnosis") or str(r.data)[:200]
-                summaries.append(f"[{r.name}]: {summary}")
-
-        loc_str = "India"
-        if location:
-            parts = [location.get("state"), location.get("country", "India")]
-            loc_str = ", ".join(p for p in parts if p)
+        summaries = "\n".join(
+            f"- {r.name}: {r.summary}"
+            for r in agent_results
+            if r.summary
+        )
+        recommendations = "\n".join(
+            f"• {rec}" for rec in merged.get("all_recommendations", [])
+        )
+        warnings_text = "\n".join(
+            f"⚠ {w}" for w in merged.get("all_warnings", [])
+        )
 
         prompt = SYNTHESIS_PROMPT.format(
             query=query,
             intent=intent,
-            crop=crop or "general crops",
-            location=loc_str,
-            agent_summaries="\n".join(summaries) if summaries else "No specific agent data",
-            all_recommendations="\n".join(f"• {r}" for r in merged.get("recommendations", [])[:8]),
-            all_warnings="\n".join(f"⚠ {w}" for w in merged.get("warnings", [])[:4]),
+            crop=crop or "not specified",
+            location=location or "not specified",
+            agent_summaries=summaries or "No agent data available.",
+            all_recommendations=recommendations or "None.",
+            all_warnings=warnings_text or "None.",
         )
 
-        try:
-            answer = await chat_completion(
-                messages=[{"role": "user", "content": prompt}],
-                model_alias="cheap",
-                system_override=SYNTHESIS_SYSTEM,
-                temperature=0.4,
-                max_tokens=600,
-            )
-            return answer
-        except Exception as e:
-            logger.error("Synthesis failed: %s", e)
-            # Fallback to rule-based explainer
-            return explain(
-                intent=intent,
-                summary=f"Analysis complete for: {query}",
-                recommendations=merged.get("recommendations", []),
-                warnings=merged.get("warnings", []),
-            )
+        return await chat_completion(
+            messages=[{"role": "user", "content": prompt}],
+            model_alias="cheap",
+            temperature=0.4,
+            max_tokens=600,
+            system_override=SYNTHESIS_SYSTEM,
+        )
+
+    # ── Follow-up suggestions ─────────────────────────────────────────────────
 
     def _generate_follow_up(self, intent: str, request: ChatRequest) -> Optional[str]:
-        """Generate context-appropriate follow-up questions."""
         follow_ups = {
-            "crop_disease": (
-                "Please upload a clear photo of the affected leaves (both top and underside) "
-                "for a more precise diagnosis."
-                if not request.images else
-                "Would you like me to calculate the exact pesticide quantity for your field size?"
-            ),
-            "soil_health": "Do you have a Soil Health Card or recent soil test report I can analyze?",
-            "fertilizer_advice": "What is your field size in acres so I can calculate exact quantities?",
-            "weather_risk": "Share your precise location (village/district) for hyper-local weather alerts.",
-            "crop_planning": "What is your water source — borewell, canal, or rain-fed?",
-            "market_price": "How many quintals do you expect to harvest, and do you have storage available?",
-            "livestock_health": "How many animals are affected and for how long have you noticed symptoms?",
+            "disease_detection":         "Would you like me to suggest a treatment schedule or find a local agrochemist?",
+            "soil_analysis":             "Should I also recommend fertilizers based on this soil profile?",
+            "fertilizer_recommendation": "Would you like a week-by-week application schedule?",
+            "weather_risk":              "Would you like me to set a spray-window alert for the next 7 days?",
+            "crop_planning":             "Would you like a full sowing-to-harvest calendar for this crop?",
+            "market_intelligence":       "Should I also check the nearest mandi prices for comparison?",
         }
         return follow_ups.get(intent)
+
+
+# ── Helpers for extracting fields from raw agent dicts ────────────────────────
+
+def _pick(d: Dict[str, Any], *keys: str) -> Optional[str]:
+    """Return the first non-empty string value found among the given keys."""
+    for k in keys:
+        v = d.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+
+
+def _pick_list(d: Dict[str, Any], *keys: str) -> List[str]:
+    """Return the first non-empty list found among the given keys."""
+    for k in keys:
+        v = d.get(k)
+        if isinstance(v, list) and v:
+            return [str(i) for i in v]
+        if isinstance(v, str) and v.strip():
+            return [v.strip()]
+    return []
+
+
+def _pick_float(d: Dict[str, Any], *keys: str) -> Optional[float]:
+    """Return the first numeric value found among the given keys."""
+    for k in keys:
+        v = d.get(k)
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                pass
+    return None

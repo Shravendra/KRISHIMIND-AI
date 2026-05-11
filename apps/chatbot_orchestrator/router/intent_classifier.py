@@ -2,7 +2,8 @@
 
 import json
 import re
-from typing import List, Dict, Any
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional
 
 from shared.llm.client import LLMClient
 from shared.constants.app import (
@@ -14,6 +15,47 @@ from shared.utils.logging import get_logger
 
 logger = get_logger("orchestrator.intent_classifier")
 _llm = LLMClient()
+
+# ── IntentDecision dataclass ──────────────────────────────────────────────────
+
+@dataclass
+class IntentDecision:
+    """Structured result returned by classify_intent."""
+    intent: str
+    confidence: float
+    agents_to_call: List[str] = field(default_factory=list)
+    secondary_intents: List[str] = field(default_factory=list)
+    extracted_entities: Dict[str, Any] = field(default_factory=dict)
+
+
+# ── Intent → Agents mapping ───────────────────────────────────────────────────
+
+INTENT_TO_AGENTS: Dict[str, List[str]] = {
+    INTENT_DISEASE:        ["image_analysis", "disease_detection", "rag_knowledge_agent"],
+    INTENT_SOIL:           ["soil_agent", "rag_knowledge_agent"],
+    INTENT_FERTILIZER:     ["fertilizer_agent", "soil_agent"],
+    INTENT_WEATHER:        ["weather_agent"],
+    INTENT_CROP_PLANNING:  ["crop_planning_agent", "weather_agent"],
+    INTENT_MARKET:         ["market_agent"],
+    INTENT_LIVESTOCK:      ["rag_knowledge_agent"],
+    INTENT_KNOWLEDGE:      ["rag_knowledge_agent"],
+    INTENT_GREETING:       ["rag_knowledge_agent"],
+    INTENT_UNKNOWN:        ["rag_knowledge_agent"],
+}
+
+
+def _agents_for_intent(primary: str, secondary: List[str], has_images: bool) -> List[str]:
+    """Build the deduplicated agent list from intents + image flag."""
+    agents: List[str] = list(INTENT_TO_AGENTS.get(primary, ["rag_knowledge_agent"]))
+    for intent in secondary:
+        for agent in INTENT_TO_AGENTS.get(intent, []):
+            if agent not in agents:
+                agents.append(agent)
+    # If images were uploaded and disease / image_analysis not already queued, add them
+    if has_images and "image_analysis" not in agents:
+        agents.insert(0, "image_analysis")
+    return agents
+
 
 INTENT_SYSTEM_PROMPT = """You are an intent classifier for an agricultural AI assistant serving Indian farmers.
 
@@ -35,7 +77,7 @@ Available intents (you may return multiple if the query spans domains):
 Response format:
 {
   "primary_intent": "<intent>",
-  "secondary_intents": ["<intent>", ...],   // 0-2 additional relevant intents
+  "secondary_intents": ["<intent>", ...],
   "confidence": 0.0-1.0,
   "extracted_entities": {
     "crop": "<crop name or null>",
@@ -45,7 +87,8 @@ Response format:
   }
 }"""
 
-# Lightweight keyword-based fallback (no LLM call)
+# ── Lightweight keyword fallback ──────────────────────────────────────────────
+
 KEYWORD_MAP: Dict[str, str] = {
     # Disease
     "disease": INTENT_DISEASE, "fungal": INTENT_DISEASE, "bacterial": INTENT_DISEASE,
@@ -66,8 +109,8 @@ KEYWORD_MAP: Dict[str, str] = {
     "temperature": INTENT_WEATHER, "monsoon": INTENT_WEATHER,
     # Crop planning
     "sow": INTENT_CROP_PLANNING, "plant": INTENT_CROP_PLANNING, "grow": INTENT_CROP_PLANNING,
-    "rotation": INTENT_CROP_PLANNING, "intercrop": INTENT_CROP_PLANNING, "season": INTENT_CROP_PLANNING,
-    "variety": INTENT_CROP_PLANNING, "seed": INTENT_CROP_PLANNING,
+    "rotation": INTENT_CROP_PLANNING, "intercrop": INTENT_CROP_PLANNING,
+    "season": INTENT_CROP_PLANNING, "variety": INTENT_CROP_PLANNING, "seed": INTENT_CROP_PLANNING,
     # Market
     "price": INTENT_MARKET, "mandi": INTENT_MARKET, "market": INTENT_MARKET,
     "sell": INTENT_MARKET, "msp": INTENT_MARKET, "profit": INTENT_MARKET,
@@ -94,18 +137,36 @@ def _keyword_classify(message: str) -> str:
     return max(scores, key=scores.__getitem__)
 
 
-async def classify_intent(message: str, history: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+# ── Public API ────────────────────────────────────────────────────────────────
+
+async def classify_intent(
+    message: str,
+    history: Optional[List[Dict[str, Any]]] = None,
+    has_images: bool = False,
+) -> IntentDecision:
     """Classify the user message into one or more agricultural intents.
 
-    Uses LLM for precision; falls back to keyword matching on failure.
+    Args:
+        message:    The farmer's input text.
+        history:    Optional recent conversation turns for context.
+        has_images: Whether the request includes uploaded images.
+
+    Returns:
+        IntentDecision with intent, confidence, and agents_to_call populated.
     """
     try:
         messages = []
         if history:
-            # Include last 3 turns for context
             for turn in history[-3:]:
-                messages.append({"role": turn.get("role", "user"), "content": turn.get("content", "")})
-        messages.append({"role": "user", "content": message})
+                messages.append({
+                    "role": turn.get("role", "user"),
+                    "content": turn.get("content", ""),
+                })
+        # Append image hint to the message so the LLM knows
+        user_content = message
+        if has_images:
+            user_content = f"[Image uploaded] {message}"
+        messages.append({"role": "user", "content": user_content})
 
         raw = await _llm.chat_completion(
             messages=messages,
@@ -115,31 +176,51 @@ async def classify_intent(message: str, history: List[Dict[str, Any]] = None) ->
             max_tokens=300,
         )
 
-        # Strip any accidental markdown fences
         cleaned = re.sub(r"```(?:json)?|```", "", raw).strip()
         result = json.loads(cleaned)
+
+        primary = result.get("primary_intent", INTENT_UNKNOWN)
+        secondary = result.get("secondary_intents", [])
+        confidence = float(result.get("confidence", 0.7))
+        entities = result.get("extracted_entities", {})
+
+        # Propagate has_images into entities
+        if has_images:
+            entities["has_image"] = True
+
+        agents = _agents_for_intent(primary, secondary, has_images)
 
         logger.info(
             "intent_classified",
             extra={
-                "intent": result.get("primary_intent"),
-                "confidence": result.get("confidence"),
+                "intent": primary,
+                "confidence": confidence,
+                "agents": agents,
                 "message_len": len(message),
             },
         )
-        return result
+
+        return IntentDecision(
+            intent=primary,
+            confidence=confidence,
+            agents_to_call=agents,
+            secondary_intents=secondary,
+            extracted_entities=entities,
+        )
 
     except Exception as exc:
         logger.warning("intent_classifier_fallback", extra={"error": str(exc)})
         primary = _keyword_classify(message)
-        return {
-            "primary_intent": primary,
-            "secondary_intents": [],
-            "confidence": 0.6,
-            "extracted_entities": {
+        agents = _agents_for_intent(primary, [], has_images)
+        return IntentDecision(
+            intent=primary,
+            confidence=0.6,
+            agents_to_call=agents,
+            secondary_intents=[],
+            extracted_entities={
                 "crop": None,
                 "location": None,
-                "has_image": False,
+                "has_image": has_images,
                 "urgency": "medium",
             },
-        }
+        )
