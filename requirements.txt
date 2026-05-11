@@ -1,0 +1,54 @@
+# ── Core framework ───────────────────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+pydantic==2.7.1
+pydantic-settings==2.2.1
+python-multipart==0.0.9
+
+# ── LLM & AI ─────────────────────────────────────────────────────────────────
+litellm==1.40.0
+openai==1.30.0
+anthropic==0.28.0
+
+# ── Database & caching ───────────────────────────────────────────────────────
+redis[asyncio]==5.0.4
+asyncpg==0.29.0
+sqlalchemy[asyncio]==2.0.30
+alembic==1.13.1
+
+# ── Vector database ──────────────────────────────────────────────────────────
+qdrant-client==1.9.1
+
+# ── Object storage ───────────────────────────────────────────────────────────
+minio==7.2.7
+
+# ── Auth ─────────────────────────────────────────────────────────────────────
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# ── HTTP client ──────────────────────────────────────────────────────────────
+httpx==0.27.0
+aiohttp==3.9.5
+
+# ── Data processing ──────────────────────────────────────────────────────────
+numpy==1.26.4
+pandas==2.2.2
+Pillow==10.3.0
+
+# ── Observability ────────────────────────────────────────────────────────────
+prometheus-client==0.20.0
+python-json-logger==2.0.7
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+python-dotenv==1.0.1
+tenacity==8.3.0        # retry logic
+pytz==2024.1
+
+# ── Testing ──────────────────────────────────────────────────────────────────
+pytest==8.2.0
+pytest-asyncio==0.23.6
+httpx==0.27.0          # for TestClient
+
+
+passlib==1.7.4
+python-jose[cryptography]
