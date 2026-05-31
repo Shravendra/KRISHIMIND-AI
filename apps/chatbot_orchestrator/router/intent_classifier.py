@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Optional
 from shared.llm.client import LLMClient
 from shared.constants.app import (
     INTENT_DISEASE, INTENT_SOIL, INTENT_FERTILIZER, INTENT_WEATHER,
-    INTENT_CROP_PLANNING, INTENT_MARKET, INTENT_LIVESTOCK,
+    INTENT_CROP_PLANNING, INTENT_MARKET, INTENT_LIVESTOCK, INTENT_HARVEST,
     INTENT_KNOWLEDGE, INTENT_GREETING, INTENT_UNKNOWN,
 )
 from shared.utils.logging import get_logger
@@ -37,6 +37,7 @@ INTENT_TO_AGENTS: Dict[str, List[str]] = {
     INTENT_WEATHER:        ["weather_agent"],
     INTENT_CROP_PLANNING:  ["crop_planning_agent", "weather_agent"],
     INTENT_MARKET:         ["market_agent"],
+    INTENT_HARVEST:        ["harvest_agent", "postharvest_agent", "weather_agent"],
     INTENT_LIVESTOCK:      ["rag_knowledge_agent"],
     INTENT_KNOWLEDGE:      ["rag_knowledge_agent"],
     INTENT_GREETING:       ["rag_knowledge_agent"],
@@ -70,6 +71,8 @@ Available intents (you may return multiple if the query spans domains):
 - crop_planning       : which crop to grow, sowing calendar, crop rotation, intercropping
 - market_intelligence : mandi price, MSP, selling strategy, price forecast
 - livestock_health    : cattle, poultry, goat disease, vaccination, feed
+- harvest_recommendation : optimal harvest timing, methods, yield estimation
+- postharvest_management : handling, storage, preservation of agricultural produce
 - general_knowledge   : farming tips, government schemes, organic farming practices
 - greeting            : hello, hi, greetings, thanks, general chitchat
 - unknown             : cannot determine
@@ -115,6 +118,10 @@ KEYWORD_MAP: Dict[str, str] = {
     "price": INTENT_MARKET, "mandi": INTENT_MARKET, "market": INTENT_MARKET,
     "sell": INTENT_MARKET, "msp": INTENT_MARKET, "profit": INTENT_MARKET,
     "rate": INTENT_MARKET,
+    # Harvest
+    "harvest" : INTENT_HARVEST, "yield" : INTENT_HARVEST, "maturity" : INTENT_HARVEST,
+    "panicle" : INTENT_HARVEST, "grain" : INTENT_HARVEST, "lodge" : INTENT_HARVEST,
+    "postharvest": INTENT_HARVEST, "storage": INTENT_HARVEST, "preservation": INTENT_HARVEST,
     # Livestock
     "cow": INTENT_LIVESTOCK, "cattle": INTENT_LIVESTOCK, "buffalo": INTENT_LIVESTOCK,
     "goat": INTENT_LIVESTOCK, "poultry": INTENT_LIVESTOCK, "chicken": INTENT_LIVESTOCK,

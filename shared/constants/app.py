@@ -11,12 +11,14 @@ AGENT_FERTILIZER  = "fertilizer_optimization"
 AGENT_WEATHER     = "weather_risk"
 AGENT_CROP_PLAN   = "crop_planning"
 AGENT_MARKET      = "market_intelligence"
+AGENT_HARVEST     = "harvest_recommendation"
+AGENT_POSTHARVEST = "postharvest_management"
 AGENT_LIVESTOCK   = "livestock_health"
 AGENT_KNOWLEDGE   = "knowledge_base"
 
 ALL_AGENTS = [
     AGENT_DISEASE, AGENT_SOIL, AGENT_FERTILIZER, AGENT_WEATHER,
-    AGENT_CROP_PLAN, AGENT_MARKET, AGENT_LIVESTOCK, AGENT_KNOWLEDGE,
+    AGENT_CROP_PLAN, AGENT_MARKET, AGENT_HARVEST, AGENT_POSTHARVEST, AGENT_LIVESTOCK, AGENT_KNOWLEDGE,
 ]
 
 # ── Intent labels (must match intent_classifier output) ──────────────────────
@@ -26,6 +28,8 @@ INTENT_FERTILIZER     = "fertilizer_recommendation"
 INTENT_WEATHER        = "weather_risk"
 INTENT_CROP_PLANNING  = "crop_planning"
 INTENT_MARKET         = "market_intelligence"
+INTENT_HARVEST        = "harvest_recommendation"
+INTENT_POSTHARVEST    = "postharvest_management"
 INTENT_LIVESTOCK      = "livestock_health"
 INTENT_KNOWLEDGE      = "general_knowledge"
 INTENT_GREETING       = "greeting"

@@ -1,7 +1,7 @@
 """
 apps/chatbot_orchestrator/main.py
 ──────────────────────────────────
-Production-grade chatbot orchestrator.
+A chatbot orchestrator.
 Routes intents to specialized agents, merges results, and generates
 farmer-friendly explanations via LiteLLM.
 """
@@ -35,7 +35,7 @@ from rag.pipelines.rag_pipeline import rag_answer
 
 logger = get_logger(__name__)
 
-SYNTHESIS_SYSTEM = """You are KrishiMind, a friendly agricultural AI assistant.
+SYNTHESIS_SYSTEM = """You are KrishiMind, a friendly advancedagricultural AI assistant.
 Your job is to synthesize analysis from multiple AI agents into ONE clear,
 farmer-friendly response in simple language.
 
@@ -47,6 +47,8 @@ Rules:
 - Mention costs and quantities when relevant
 - Always end with what to do FIRST (most important action)
 - Be empathetic and encouraging
+- If agent data is missing or low-confidence, say so and give best guess based on available info
+- Don't just list agent findings — weave them into a coherent narrative that directly answers the farmer's question
 - Keep it concise but complete"""
 
 SYNTHESIS_PROMPT = """Synthesize these agent results into ONE farmer-friendly response:

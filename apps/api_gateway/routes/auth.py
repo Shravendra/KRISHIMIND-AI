@@ -1,71 +1,62 @@
-"""
-apps/api_gateway/routes/auth.py
-────────────────────────────────
-Authentication routes: register, login, me, logout.
-"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, EmailStr, Field
-from typing import List, Optional
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    status,
+)
 
-from shared.auth.jwt import create_access_token, get_current_user, UserInToken, verify_password
-from shared.auth.user_store import user_store
+from shared.auth.jwt import (
+    create_access_token,
+    get_current_user,
+    UserInToken,
+)
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+from apps.db.schemas.auth import (
+    RegisterRequest,
+    LoginRequest,
+    TokenResponse,
+    UserProfileResponse,
+    ProfileUpdateRequest,
+)
 
+from apps.db.services.auth_service import (
+    AuthService,
+)
 
-# ── Request / Response Schemas ────────────────────────────────────────────────
+from apps.db.dependencies import (
+    get_auth_service,
+)
 
-class RegisterRequest(BaseModel):
-    name: str = Field(..., min_length=2, max_length=100)
-    email: EmailStr
-    password: str = Field(..., min_length=8)
-    phone: Optional[str] = None
-    location: Optional[str] = None
-    primary_crops: List[str] = Field(default_factory=list)
-    land_size_acres: Optional[float] = None
-
-
-class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    farmer_id: str
-    name: str
-    role: str
-
-
-class UserProfileResponse(BaseModel):
-    farmer_id: str
-    name: str
-    email: str
-    role: str
-    phone: Optional[str]
-    location: Optional[str]
-    primary_crops: List[str]
-    land_size_acres: Optional[float]
-    is_active: bool
+router = APIRouter(
+    prefix="/auth",
+    tags=["auth"],
+)
 
 
-class ProfileUpdateRequest(BaseModel):
-    phone: Optional[str] = None
-    location: Optional[str] = None
-    primary_crops: Optional[List[str]] = None
-    land_size_acres: Optional[float] = None
+# ============================================================
+# REGISTER
+# ============================================================
 
+@router.post(
+    "/register",
+    response_model=TokenResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def register(
+    body: RegisterRequest,
+    auth_service: AuthService = Depends(
+        get_auth_service
+    ),
+):
+    """
+    Register a new farmer account.
+    """
 
-# ── Routes ────────────────────────────────────────────────────────────────────
-
-@router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-async def register(body: RegisterRequest):
-    """Register a new farmer account."""
     try:
-        user = user_store.create(
+
+        user = await auth_service.register(
             name=body.name,
             email=body.email,
             password=body.password,
@@ -74,10 +65,22 @@ async def register(body: RegisterRequest):
             primary_crops=body.primary_crops,
             land_size_acres=body.land_size_acres,
         )
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
-    token = create_access_token({"sub": user.farmer_id, "name": user.name, "role": user.role})
+    except ValueError as exc:
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        )
+
+    token = create_access_token(
+        {
+            "sub": user.farmer_id,
+            "name": user.name,
+            "role": user.role,
+        }
+    )
+
     return TokenResponse(
         access_token=token,
         farmer_id=user.farmer_id,
@@ -86,19 +89,46 @@ async def register(body: RegisterRequest):
     )
 
 
-@router.post("/login", response_model=TokenResponse)
-async def login(body: LoginRequest):
-    """Login with email and password."""
-    user = user_store.get_by_email(body.email)
-    if not user or not verify_password(body.password, user.hashed_password):
+# ============================================================
+# LOGIN
+# ============================================================
+
+@router.post(
+    "/login",
+    response_model=TokenResponse,
+)
+async def login(
+    body: LoginRequest,
+    auth_service: AuthService = Depends(
+        get_auth_service
+    ),
+):
+    """
+    Login using email/password.
+    """
+
+    try:
+
+        user = await auth_service.login(
+            email=body.email,
+            password=body.password,
+        )
+
+    except ValueError as exc:
+
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
+            detail=str(exc),
         )
-    if not user.is_active:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
 
-    token = create_access_token({"sub": user.farmer_id, "name": user.name, "role": user.role})
+    token = create_access_token(
+        {
+            "sub": user.farmer_id,
+            "name": user.name,
+            "role": user.role,
+        }
+    )
+
     return TokenResponse(
         access_token=token,
         farmer_id=user.farmer_id,
@@ -107,43 +137,127 @@ async def login(body: LoginRequest):
     )
 
 
-@router.get("/me", response_model=UserProfileResponse)
-async def get_profile(current_user: UserInToken = Depends(get_current_user)):
-    """Get current user profile."""
-    user = user_store.get_by_id(current_user.farmer_id)
+# ============================================================
+# CURRENT PROFILE
+# ============================================================
+
+@router.get(
+    "/me",
+    response_model=UserProfileResponse,
+)
+async def get_profile(
+    current_user: UserInToken = Depends(
+        get_current_user
+    ),
+    auth_service: AuthService = Depends(
+        get_auth_service
+    ),
+):
+    """
+    Retrieve current user profile.
+    """
+
+    user = await auth_service.get_profile(
+        current_user.farmer_id
+    )
+
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    return UserProfileResponse(**user.model_dump())
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    return UserProfileResponse.model_validate(
+        user
+    )
 
 
-@router.put("/me", response_model=UserProfileResponse)
+# ============================================================
+# UPDATE PROFILE
+# ============================================================
+
+@router.put(
+    "/me",
+    response_model=UserProfileResponse,
+)
 async def update_profile(
     body: ProfileUpdateRequest,
-    current_user: UserInToken = Depends(get_current_user),
+    current_user: UserInToken = Depends(
+        get_current_user
+    ),
+    auth_service: AuthService = Depends(
+        get_auth_service
+    ),
 ):
-    """Update farmer profile."""
-    updates = body.model_dump(exclude_none=True)
-    user = user_store.update_profile(current_user.farmer_id, updates)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    return UserProfileResponse(**user.model_dump())
+    """
+    Update farmer profile.
+    """
 
+    updates = body.model_dump(
+        exclude_none=True
+    )
+
+    user = await auth_service.update_profile(
+        farmer_id=current_user.farmer_id,
+        updates=updates,
+    )
+
+    if not user:
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    return UserProfileResponse.model_validate(
+        user
+    )
+
+
+# ============================================================
+# LOGOUT
+# ============================================================
 
 @router.post("/logout")
-async def logout(current_user: UserInToken = Depends(get_current_user)):
+async def logout(
+    current_user: UserInToken = Depends(
+        get_current_user
+    ),
+):
     """
-    Logout endpoint.
-    Since we use stateless JWT, client must delete the token.
-    Production: add token to Redis blacklist here.
-    """
-    return {"message": f"Successfully logged out, {current_user.name}"}
+    Stateless JWT logout.
 
+    Future enhancement:
+    Store JWT in Redis blacklist.
+    """
+
+    return {
+        "message": (
+            f"Successfully logged out, "
+            f"{current_user.name}"
+        )
+    }
+
+
+# ============================================================
+# DEMO USERS
+# ============================================================
 
 @router.get("/demo-credentials")
 async def demo_credentials():
-    """Return demo login credentials for testing."""
+
     return {
-        "message": "Use these credentials to test the platform",
-        "demo_farmer": {"email": "demo@krishimind.ai", "password": "demo1234"},
-        "demo_admin": {"email": "admin@krishimind.ai", "password": "admin1234"},
+        "message": (
+            "Use these credentials "
+            "for testing."
+        ),
+        "demo_farmer": {
+            "email": "demo@krishimind.ai",
+            "password": "demo1234",
+        },
+        "demo_admin": {
+            "email": "admin@krishimind.ai",
+            "password": "admin1234",
+        },
     }

@@ -15,7 +15,16 @@ from apps.api_gateway.middleware.logging import logging_middleware
 from apps.api_gateway.middleware.rate_limit import RateLimitMiddleware
 
 from shared.constants.app import APP_NAME, APP_VERSION
+from contextlib import asynccontextmanager
+from apps.db.init_db import init_db
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+
+    await init_db()
+
+    yield
 
 app = FastAPI(
     title=APP_NAME,
@@ -23,6 +32,7 @@ app = FastAPI(
     description="AI-powered agricultural intelligence platform API",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 
